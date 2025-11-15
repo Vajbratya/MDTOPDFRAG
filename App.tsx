@@ -23,6 +23,53 @@ interface UploadedFile {
 }
 
 const MAX_FILES = 100;
+const MAX_FILE_SIZE_MB = 5;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
+/**
+ * Converts CSV string to a Markdown table.
+ * @param csv The string content of a CSV file.
+ * @returns A string formatted as a Markdown table.
+ */
+const csvToMarkdownTable = (csv: string): string => {
+    const content = csv.trim();
+    if (!content) return '';
+    
+    // A simple but effective regex-based CSV row parser to handle quoted commas.
+    const parseCsvRow = (row: string): string[] => {
+        const results = [];
+        let currentMatch = '';
+        // This regex handles quoted fields, including escaped quotes within them.
+        const regex = /(?:"((?:""|[^"])*)"|([^,]*))(,|$)/g;
+        let match;
+        while ((match = regex.exec(row))) {
+            let value = match[1] !== undefined ? match[1].replace(/""/g, '"') : match[2];
+            results.push(value.trim());
+            if (match[3] === '') break;
+        }
+        return results;
+    };
+
+    const lines = content.split(/\r?\n/);
+    if (lines.length === 0) return '';
+    
+    const header = parseCsvRow(lines[0]);
+    const separator = header.map(() => '---').join(' | ');
+    
+    const rows = lines.slice(1)
+        .filter(line => line.trim() !== '')
+        .map(line => {
+            const cells = parseCsvRow(line);
+            // Pad or truncate row to match header length for consistency
+            const adjustedCells = Array.from({ length: header.length }, (_, i) => cells[i] || '');
+            // Escape pipe characters within cells to prevent breaking table structure
+            return adjustedCells.map(cell => cell.replace(/\|/g, '\\|')).join(' | ');
+        })
+        .map(row => `| ${row} |`)
+        .join('\n');
+
+    return `| ${header.join(' | ')} |\n| ${separator} |\n${rows}`;
+};
 
 const App: React.FC = () => {
     const [files, setFiles] = useState<UploadedFile[]>([]);
@@ -31,10 +78,17 @@ const App: React.FC = () => {
     const [isJoining, setIsJoining] = useState<boolean>(true);
     const [statusMessage, setStatusMessage] = useState<string>('');
     const [isDragging, setIsDragging] = useState<boolean>(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const sanitizeFilenameForHeader = (name: string) => {
+        const extensionless = name.replace(/\.(md|markdown|csv)$/i, '');
+        // Escape markdown special characters to prevent them from being rendered.
+        return extensionless.replace(/([\\`*_{}[\]()#+-.!])/g, '\\$1');
+    };
 
     const combinedMarkdown = useMemo(() => {
         if (!isJoining || files.length === 0) return '';
-        return files.map(file => `# ${file.name.replace(/\.md$/, '')}\n\n${file.content}`).join('\n\n<hr class="border-gray-600 my-8"/>\n\n');
+        return files.map(file => `# ${sanitizeFilenameForHeader(file.name)}\n\n${file.content}`).join('\n\n---\n\n');
     }, [files, isJoining]);
 
     useEffect(() => {
@@ -50,33 +104,57 @@ const App: React.FC = () => {
     }, [combinedMarkdown]);
 
     const processFiles = useCallback((droppedFiles: File[]) => {
-        const newFiles = Array.from(droppedFiles).filter(file => file.name.endsWith('.md') || file.name.endsWith('.markdown'));
-        if (files.length + newFiles.length > MAX_FILES) {
-            alert(`You can only upload up to ${MAX_FILES} files.`);
+        setError(null);
+        const acceptedFiles = Array.from(droppedFiles).filter(file =>
+            /\.(md|markdown|csv)$/i.test(file.name)
+        );
+
+        if (files.length + acceptedFiles.length > MAX_FILES) {
+            setError(`You can only upload up to ${MAX_FILES} files.`);
             return;
         }
 
         const readFile = (file: File): Promise<UploadedFile> => {
             return new Promise((resolve, reject) => {
+                if (file.size > MAX_FILE_SIZE_BYTES) {
+                    return reject(new Error(`"${file.name}" is larger than ${MAX_FILE_SIZE_MB}MB.`));
+                }
+
                 const reader = new FileReader();
                 reader.onload = (event) => {
-                    const content = event.target?.result as string;
-                    resolve({ name: file.name, content });
+                    try {
+                        let content = event.target?.result as string;
+                        if (/\.csv$/i.test(file.name)) {
+                           content = csvToMarkdownTable(content);
+                        }
+                        resolve({ name: file.name, content });
+                    } catch (err) {
+                        reject(new Error(`Failed to process "${file.name}".`));
+                    }
                 };
-                reader.onerror = reject;
+                reader.onerror = () => reject(new Error(`Failed to read "${file.name}".`));
                 reader.readAsText(file);
             });
         };
 
-        Promise.all(newFiles.map(readFile)).then(readFiles => {
-            setFiles(currentFiles => [...currentFiles, ...readFiles]);
-        });
+        const promises = acceptedFiles.map(readFile);
+
+        Promise.all(promises)
+            .then(newFiles => {
+                setFiles(currentFiles => [...currentFiles, ...newFiles]);
+            })
+            .catch(err => {
+                setError(err.message);
+            });
+
     }, [files.length]);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files) {
             processFiles(Array.from(e.target.files));
         }
+        // Reset input value to allow re-uploading the same file
+        e.target.value = '';
     };
 
     const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -103,10 +181,17 @@ const App: React.FC = () => {
     };
 
     const handleDownload = useCallback(async () => {
+        setError(null);
         if (files.length === 0) {
-            alert("Please upload some markdown files first.");
+            setError("Please upload some files first.");
             return;
         }
+        
+        if (!window.jspdf || !window.marked || !window.DOMPurify || !window.JSZip) {
+            setError("Core libraries failed to load. Please refresh the page and try again.");
+            return;
+        }
+        
         setIsLoading(true);
 
         const { jsPDF } = window.jspdf;
@@ -116,7 +201,7 @@ const App: React.FC = () => {
         const createPdf = async (markdownContent: string, title: string): Promise<any> => {
             const rawHtml = await marked.parse(markdownContent, { gfm: true, breaks: true });
             const sanitizedHtml = DOMPurify.sanitize(rawHtml);
-            const styles = `body{font-family:'Helvetica','sans-serif';line-height:1.6;color:#1f2937}h1{font-size:24pt;font-weight:700;margin-bottom:16pt;border-bottom:1px solid #d1d5db;padding-bottom:8pt;color:#111827}h2{font-size:20pt;font-weight:700;margin-bottom:12pt;border-bottom:1px solid #e5e7eb;padding-bottom:6pt;color:#111827}h3{font-size:16pt;font-weight:700;margin-bottom:10pt;color:#1f2937}p,ul,ol,blockquote{margin-bottom:12pt}ul,ol{padding-left:20pt}li{margin-bottom:4pt}code{font-family:'Courier New',Courier,monospace;background-color:#f3f4f6;padding:2pt 4pt;border-radius:4px;font-size:85%;color:#374151}pre{background-color:#f3f4f6;padding:12pt;border-radius:6px;overflow:auto;margin-bottom:16pt}pre code{padding:0;background-color:transparent}blockquote{color:#4b5563;border-left:4px solid #d1d5db;padding-left:16pt;margin-left:0;font-style:italic}a{color:#2563eb;text-decoration:none}hr{border-top:1px solid #d1d5db;margin:2rem 0}`;
+            const styles = `body{font-family:'Helvetica','sans-serif';line-height:1.6;color:#1f2937}h1{font-size:24pt;font-weight:700;margin-bottom:16pt;border-bottom:1px solid #d1d5db;padding-bottom:8pt;color:#111827}h2{font-size:20pt;font-weight:700;margin-bottom:12pt;border-bottom:1px solid #e5e7eb;padding-bottom:6pt;color:#111827}h3{font-size:16pt;font-weight:700;margin-bottom:10pt;color:#1f2937}p,ul,ol,blockquote{margin-bottom:12pt}ul,ol{padding-left:20pt}li{margin-bottom:4pt}code{font-family:'Courier New',Courier,monospace;background-color:#f3f4f6;padding:2pt 4pt;border-radius:4px;font-size:85%;color:#374151}pre{background-color:#f3f4f6;padding:12pt;border-radius:6px;overflow:auto;margin-bottom:16pt}pre code{padding:0;background-color:transparent}blockquote{color:#4b5563;border-left:4px solid #d1d5db;padding-left:16pt;margin-left:0;font-style:italic}a{color:#2563eb;text-decoration:none}hr{border-top:1px solid #d1d5db;margin:2rem 0}table{border-collapse:collapse;width:100%;margin-bottom:1rem}th,td{border:1px solid #d1d5db;padding:8px;text-align:left}th{background-color:#f3f4f6;font-weight:bold}`;
             const fullHtml = `<html><head><meta charset="UTF-8"><style>${styles}</style></head><body>${sanitizedHtml}</body></html>`;
             
             const doc = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' });
@@ -124,7 +209,7 @@ const App: React.FC = () => {
             doc.setDocumentProperties({
                 title: title,
                 author: 'RAG-Optimized PDF Converter',
-                keywords: 'Markdown, PDF, RAG, Gemini API',
+                keywords: 'Markdown, PDF, RAG, Gemini API, CSV',
                 creator: 'RAG-Optimized PDF Converter'
             });
 
@@ -134,15 +219,14 @@ const App: React.FC = () => {
         try {
             if (isJoining) {
                 setStatusMessage("Generating combined PDF...");
-                const combinedContent = files.map(f => `# ${f.name.replace(/\.md$/, '')}\n\n${f.content}`).join('\n\n---\n\n');
-                const doc = await createPdf(combinedContent, 'RAG-Optimized Document');
+                const doc = await createPdf(combinedMarkdown, 'RAG-Optimized Document');
                 doc.save('rag-combined.pdf');
             } else {
                 const zip = new window.JSZip();
                 for (let i = 0; i < files.length; i++) {
                     const file = files[i];
                     setStatusMessage(`Generating PDF ${i + 1}/${files.length}...`);
-                    const title = file.name.replace(/\.(md|markdown)$/, '');
+                    const title = file.name.replace(/\.(md|markdown|csv)$/i, '');
                     const doc = await createPdf(file.content, title);
                     const pdfBlob = doc.output('blob');
                     zip.file(`${title}.pdf`, pdfBlob);
@@ -155,22 +239,24 @@ const App: React.FC = () => {
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
+                URL.revokeObjectURL(link.href);
             }
-        } catch (error) {
-            console.error("Failed to generate output:", error);
-            alert("An error occurred. Please check the console.");
+        } catch (err) {
+            console.error("Failed to generate output:", err);
+            const message = err instanceof Error ? err.message : "An unknown error occurred.";
+            setError(`Failed to generate output: ${message}`);
         } finally {
             setIsLoading(false);
             setStatusMessage('');
         }
-    }, [files, isJoining]);
+    }, [files, isJoining, combinedMarkdown]);
 
     return (
         <div className="flex flex-col h-screen bg-gray-900 text-gray-200">
             <header className="flex items-center justify-between p-4 bg-gray-800 border-b border-gray-700 shadow-md flex-wrap gap-4">
                 <div className="flex items-center space-x-3">
                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8 text-cyan-400"><path d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0 0 16.5 9h-1.875a.375.375 0 0 1-.375-.375V6.75A3.75 3.75 0 0 0 10.5 3H5.625Z M10.5 10.5a.75.75 0 0 0-1.5 0v1.5a.75.75 0 0 0 1.5 0v-1.5Z" /><path d="M12.47 6.112a.75.75 0 0 0-1.06 1.06l3.611 3.612a.75.75 0 0 0 1.06-1.06l-3.61-3.612Z" /></svg>
-                    <h1 className="text-xl font-bold text-white tracking-wide">MD to RAG-Optimized PDF</h1>
+                    <h1 className="text-xl font-bold text-white tracking-wide">MD/CSV to RAG-Optimized PDF</h1>
                 </div>
                 <div className="flex items-center space-x-4">
                     <label className="flex items-center cursor-pointer">
@@ -205,13 +291,18 @@ const App: React.FC = () => {
                         className={`relative flex flex-col items-center justify-center w-full h-48 border-2 border-dashed rounded-lg cursor-pointer transition-colors duration-200 ${isDragging ? 'border-cyan-400 bg-gray-700' : 'border-gray-600 hover:border-gray-500 bg-gray-800'}`}
                         onDragEnter={handleDragEvents} onDragOver={handleDragEvents} onDragLeave={handleDragEvents} onDrop={handleDrop}
                      >
-                        <input type="file" id="file-upload" multiple accept=".md,.markdown" className="hidden" onChange={handleFileChange} />
+                        <input type="file" id="file-upload" multiple accept=".md,.markdown,.csv" className="hidden" onChange={handleFileChange} />
                         <label htmlFor="file-upload" className="flex flex-col items-center justify-center w-full h-full cursor-pointer">
                             <UploadIcon />
                             <p className="mb-2 text-sm text-gray-400"><span className="font-semibold">Click to upload</span> or drag and drop</p>
-                            <p className="text-xs text-gray-500">Markdown files (.md) only</p>
+                            <p className="text-xs text-gray-500">MD or CSV files (Max {MAX_FILE_SIZE_MB}MB each)</p>
                         </label>
                     </div>
+                     {error && (
+                        <div className="p-3 text-sm text-red-300 bg-red-900/50 border border-red-500/50 rounded-lg" role="alert">
+                           <span className="font-medium">Error:</span> {error}
+                        </div>
+                    )}
                     <div className="flex flex-col flex-grow h-0 bg-gray-800 border border-gray-700 rounded-lg">
                         <div className="flex justify-between items-center p-3 border-b border-gray-700">
                             <h2 className="font-semibold">Files ({files.length}/{MAX_FILES})</h2>
@@ -222,8 +313,8 @@ const App: React.FC = () => {
                                 <p className="text-center text-gray-500 p-4">Upload files to see them here.</p>
                            ) : (
                                <ul>
-                                   {files.map((file) => (
-                                       <li key={file.name} className="flex items-center justify-between p-2 rounded-md hover:bg-gray-700">
+                                   {files.map((file, index) => (
+                                       <li key={`${file.name}-${index}`} className="flex items-center justify-between p-2 rounded-md hover:bg-gray-700">
                                             <span className="text-sm truncate" title={file.name}>{file.name}</span>
                                             <button onClick={() => removeFile(file.name)} className="text-gray-500 hover:text-red-400"><TrashIcon /></button>
                                        </li>
@@ -250,7 +341,10 @@ const App: React.FC = () => {
                                    prose-code:bg-gray-700 prose-code:rounded prose-code:px-1.5 prose-code:py-1 prose-code:font-mono prose-code:text-sm prose-code:text-cyan-300
                                    prose-pre:bg-gray-900 prose-pre:rounded-lg prose-pre:p-4 prose-pre:overflow-x-auto prose-pre:mb-4
                                    prose-blockquote:border-l-4 prose-blockquote:border-gray-500 prose-blockquote:pl-4 prose-blockquote:italic prose-blockquote:text-gray-400
-                                   prose-a:text-cyan-400 prose-a:underline hover:prose-a:text-cyan-300"
+                                   prose-a:text-cyan-400 prose-a:underline hover:prose-a:text-cyan-300
+                                   prose-table:w-full prose-table:border-collapse prose-table:mb-4
+                                   prose-th:border prose-th:border-gray-600 prose-th:px-4 prose-th:py-2 prose-th:bg-gray-700 prose-th:font-bold
+                                   prose-td:border prose-td:border-gray-600 prose-td:px-4 prose-td:py-2"
                     >
                      {isJoining && files.length > 0 ? (
                         <div dangerouslySetInnerHTML={{ __html: sanitizedHtmlPreview }} />
