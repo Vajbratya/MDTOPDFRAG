@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { DownloadIcon, SpinnerIcon, UploadIcon, TrashIcon } from './components/icons';
 
@@ -18,6 +19,7 @@ declare global {
 }
 
 interface UploadedFile {
+    id: string;
     name: string;
     content: string;
 }
@@ -25,6 +27,8 @@ interface UploadedFile {
 const MAX_FILES = 100;
 const MAX_FILE_SIZE_MB = 5;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const MAX_ZIP_FILE_SIZE_MB = 25;
+const MAX_ZIP_FILE_SIZE_BYTES = MAX_ZIP_FILE_SIZE_MB * 1024 * 1024;
 
 /**
  * Converts CSV string to a Markdown table.
@@ -35,11 +39,9 @@ const csvToMarkdownTable = (csv: string): string => {
     const content = csv.trim();
     if (!content) return '';
     
-    // A simple but effective regex-based CSV row parser to handle quoted commas.
     const parseCsvRow = (row: string): string[] => {
         const results = [];
         let currentMatch = '';
-        // This regex handles quoted fields, including escaped quotes within them.
         const regex = /(?:"((?:""|[^"])*)"|([^,]*))(,|$)/g;
         let match;
         while ((match = regex.exec(row))) {
@@ -60,9 +62,7 @@ const csvToMarkdownTable = (csv: string): string => {
         .filter(line => line.trim() !== '')
         .map(line => {
             const cells = parseCsvRow(line);
-            // Pad or truncate row to match header length for consistency
             const adjustedCells = Array.from({ length: header.length }, (_, i) => cells[i] || '');
-            // Escape pipe characters within cells to prevent breaking table structure
             return adjustedCells.map(cell => cell.replace(/\|/g, '\\|')).join(' | ');
         })
         .map(row => `| ${row} |`)
@@ -82,7 +82,6 @@ const App: React.FC = () => {
 
     const sanitizeFilenameForHeader = (name: string) => {
         const extensionless = name.replace(/\.(md|markdown|csv)$/i, '');
-        // Escape markdown special characters to prevent them from being rendered.
         return extensionless.replace(/([\\`*_{}[\]()#+-.!])/g, '\\$1');
     };
 
@@ -103,57 +102,99 @@ const App: React.FC = () => {
         updatePreview();
     }, [combinedMarkdown]);
 
-    const processFiles = useCallback((droppedFiles: File[]) => {
+    const processFiles = useCallback(async (droppedFiles: File[]) => {
         setError(null);
-        const acceptedFiles = Array.from(droppedFiles).filter(file =>
-            /\.(md|markdown|csv)$/i.test(file.name)
-        );
-
-        if (files.length + acceptedFiles.length > MAX_FILES) {
-            setError(`You can only upload up to ${MAX_FILES} files.`);
+        if (files.length >= MAX_FILES) {
+            setError(`You have reached the maximum of ${MAX_FILES} files.`);
             return;
         }
 
-        const readFile = (file: File): Promise<UploadedFile> => {
-            return new Promise((resolve, reject) => {
-                if (file.size > MAX_FILE_SIZE_BYTES) {
-                    return reject(new Error(`"${file.name}" is larger than ${MAX_FILE_SIZE_MB}MB.`));
-                }
+        setStatusMessage('Processing files...');
+        setIsLoading(true);
 
-                const reader = new FileReader();
-                reader.onload = (event) => {
-                    try {
-                        let content = event.target?.result as string;
-                        if (/\.csv$/i.test(file.name)) {
-                           content = csvToMarkdownTable(content);
-                        }
-                        resolve({ name: file.name, content });
-                    } catch (err) {
-                        reject(new Error(`Failed to process "${file.name}".`));
+        const processSingleFile = (fileName: string, content: string): UploadedFile => {
+            let processedContent = content;
+            if (/\.csv$/i.test(fileName)) {
+                processedContent = csvToMarkdownTable(content);
+            }
+            return {
+                id: `${fileName}-${Date.now()}-${Math.random()}`,
+                name: fileName,
+                content: processedContent
+            };
+        };
+
+        const handleFile = (file: File): Promise<UploadedFile[]> => {
+            return new Promise(async (resolve, reject) => {
+                if (/\.zip$/i.test(file.name)) {
+                    if (file.size > MAX_ZIP_FILE_SIZE_BYTES) {
+                        return reject(new Error(`ZIP "${file.name}" is larger than ${MAX_ZIP_FILE_SIZE_MB}MB.`));
                     }
-                };
-                reader.onerror = () => reject(new Error(`Failed to read "${file.name}".`));
-                reader.readAsText(file);
+                    if (!window.JSZip) {
+                        return reject(new Error("ZIP library not loaded. Please refresh."));
+                    }
+                    try {
+                        const zip = await window.JSZip.loadAsync(file);
+                        const filePromises = Object.values(zip.files)
+                            // FIX: Explicitly type zipEntry as 'any' to resolve TypeScript errors about accessing properties on an 'unknown' type.
+                            .filter((zipEntry: any) => !zipEntry.dir && /\.(md|markdown|csv)$/i.test(zipEntry.name))
+                            // FIX: Explicitly type zipEntry as 'any' to resolve TypeScript errors about accessing properties on an 'unknown' type.
+                            .map(async (zipEntry: any) => {
+                                const content = await zipEntry.async('string');
+                                return processSingleFile(zipEntry.name, content);
+                            });
+                        
+                        const filesFromZip = await Promise.all(filePromises);
+                        resolve(filesFromZip);
+                    } catch (e) {
+                        reject(new Error(`Failed to process ZIP file "${file.name}". It may be corrupt.`));
+                    }
+                } else if (/\.(md|markdown|csv)$/i.test(file.name)) {
+                    if (file.size > MAX_FILE_SIZE_BYTES) {
+                        return reject(new Error(`"${file.name}" is larger than ${MAX_FILE_SIZE_MB}MB.`));
+                    }
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        try {
+                            const content = event.target?.result as string;
+                            resolve([processSingleFile(file.name, content)]);
+                        } catch (err) {
+                            reject(new Error(`Failed to process "${file.name}".`));
+                        }
+                    };
+                    reader.onerror = () => reject(new Error(`Failed to read "${file.name}".`));
+                    reader.readAsText(file);
+                } else {
+                    resolve([]); // Silently ignore unsupported file types
+                }
             });
         };
 
-        const promises = acceptedFiles.map(readFile);
+        try {
+            const promises = Array.from(droppedFiles).map(handleFile);
+            const nestedNewFiles = await Promise.all(promises);
+            const newFiles = nestedNewFiles.flat();
 
-        Promise.all(promises)
-            .then(newFiles => {
+            if (files.length + newFiles.length > MAX_FILES) {
+                setError(`Adding these files would exceed the limit of ${MAX_FILES}. Only a portion were added.`);
+                const spaceLeft = MAX_FILES - files.length;
+                setFiles(currentFiles => [...currentFiles, ...newFiles.slice(0, spaceLeft)]);
+            } else {
                 setFiles(currentFiles => [...currentFiles, ...newFiles]);
-            })
-            .catch(err => {
-                setError(err.message);
-            });
-
+            }
+        } catch (err) {
+            const message = err instanceof Error ? err.message : "An unknown error occurred.";
+            setError(message);
+        } finally {
+            setIsLoading(false);
+            setStatusMessage('');
+        }
     }, [files.length]);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files) {
             processFiles(Array.from(e.target.files));
         }
-        // Reset input value to allow re-uploading the same file
         e.target.value = '';
     };
 
@@ -176,8 +217,8 @@ const App: React.FC = () => {
         }
     };
     
-    const removeFile = (fileName: string) => {
-        setFiles(files => files.filter(file => file.name !== fileName));
+    const removeFile = (fileId: string) => {
+        setFiles(files => files.filter(file => file.id !== fileId));
     };
 
     const handleDownload = useCallback(async () => {
@@ -291,11 +332,11 @@ const App: React.FC = () => {
                         className={`relative flex flex-col items-center justify-center w-full h-48 border-2 border-dashed rounded-lg cursor-pointer transition-colors duration-200 ${isDragging ? 'border-cyan-400 bg-gray-700' : 'border-gray-600 hover:border-gray-500 bg-gray-800'}`}
                         onDragEnter={handleDragEvents} onDragOver={handleDragEvents} onDragLeave={handleDragEvents} onDrop={handleDrop}
                      >
-                        <input type="file" id="file-upload" multiple accept=".md,.markdown,.csv" className="hidden" onChange={handleFileChange} />
+                        <input type="file" id="file-upload" multiple accept=".md,.markdown,.csv,.zip" className="hidden" onChange={handleFileChange} />
                         <label htmlFor="file-upload" className="flex flex-col items-center justify-center w-full h-full cursor-pointer">
                             <UploadIcon />
                             <p className="mb-2 text-sm text-gray-400"><span className="font-semibold">Click to upload</span> or drag and drop</p>
-                            <p className="text-xs text-gray-500">MD or CSV files (Max {MAX_FILE_SIZE_MB}MB each)</p>
+                            <p className="text-xs text-gray-500">MD, CSV, or ZIP files (Max {MAX_FILE_SIZE_MB}MB per file)</p>
                         </label>
                     </div>
                      {error && (
@@ -313,10 +354,10 @@ const App: React.FC = () => {
                                 <p className="text-center text-gray-500 p-4">Upload files to see them here.</p>
                            ) : (
                                <ul>
-                                   {files.map((file, index) => (
-                                       <li key={`${file.name}-${index}`} className="flex items-center justify-between p-2 rounded-md hover:bg-gray-700">
+                                   {files.map((file) => (
+                                       <li key={file.id} className="flex items-center justify-between p-2 rounded-md hover:bg-gray-700">
                                             <span className="text-sm truncate" title={file.name}>{file.name}</span>
-                                            <button onClick={() => removeFile(file.name)} className="text-gray-500 hover:text-red-400"><TrashIcon /></button>
+                                            <button onClick={() => removeFile(file.id)} className="text-gray-500 hover:text-red-400"><TrashIcon /></button>
                                        </li>
                                    ))}
                                </ul>
