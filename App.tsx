@@ -1,6 +1,5 @@
-
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { DownloadIcon, SpinnerIcon, UploadIcon, TrashIcon } from './components/icons';
+import { DownloadIcon, SpinnerIcon, UploadIcon, TrashIcon, WizardHatIcon } from './components/icons';
 
 // Declare global variables from CDN scripts for TypeScript
 declare global {
@@ -76,6 +75,7 @@ const App: React.FC = () => {
     const [sanitizedHtmlPreview, setSanitizedHtmlPreview] = useState<string>('');
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [isJoining, setIsJoining] = useState<boolean>(true);
+    const [outputFormat, setOutputFormat] = useState<'pdf' | 'json'>('pdf');
     const [statusMessage, setStatusMessage] = useState<string>('');
     const [isDragging, setIsDragging] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
@@ -136,9 +136,7 @@ const App: React.FC = () => {
                     try {
                         const zip = await window.JSZip.loadAsync(file);
                         const filePromises = Object.values(zip.files)
-                            // FIX: Explicitly type zipEntry as 'any' to resolve TypeScript errors about accessing properties on an 'unknown' type.
                             .filter((zipEntry: any) => !zipEntry.dir && /\.(md|markdown|csv)$/i.test(zipEntry.name))
-                            // FIX: Explicitly type zipEntry as 'any' to resolve TypeScript errors about accessing properties on an 'unknown' type.
                             .map(async (zipEntry: any) => {
                                 const content = await zipEntry.async('string');
                                 return processSingleFile(zipEntry.name, content);
@@ -235,73 +233,152 @@ const App: React.FC = () => {
         
         setIsLoading(true);
 
-        const { jsPDF } = window.jspdf;
-        const { marked } = window;
-        const DOMPurify = window.DOMPurify;
+        if (outputFormat === 'pdf') {
+            const { jsPDF } = window.jspdf;
+            const { marked } = window;
+            const DOMPurify = window.DOMPurify;
 
-        const createPdf = async (markdownContent: string, title: string): Promise<any> => {
-            const rawHtml = await marked.parse(markdownContent, { gfm: true, breaks: true });
-            const sanitizedHtml = DOMPurify.sanitize(rawHtml);
-            const styles = `body{font-family:'Helvetica','sans-serif';line-height:1.6;color:#1f2937}h1{font-size:24pt;font-weight:700;margin-bottom:16pt;border-bottom:1px solid #d1d5db;padding-bottom:8pt;color:#111827}h2{font-size:20pt;font-weight:700;margin-bottom:12pt;border-bottom:1px solid #e5e7eb;padding-bottom:6pt;color:#111827}h3{font-size:16pt;font-weight:700;margin-bottom:10pt;color:#1f2937}p,ul,ol,blockquote{margin-bottom:12pt}ul,ol{padding-left:20pt}li{margin-bottom:4pt}code{font-family:'Courier New',Courier,monospace;background-color:#f3f4f6;padding:2pt 4pt;border-radius:4px;font-size:85%;color:#374151}pre{background-color:#f3f4f6;padding:12pt;border-radius:6px;overflow:auto;margin-bottom:16pt}pre code{padding:0;background-color:transparent}blockquote{color:#4b5563;border-left:4px solid #d1d5db;padding-left:16pt;margin-left:0;font-style:italic}a{color:#2563eb;text-decoration:none}hr{border-top:1px solid #d1d5db;margin:2rem 0}table{border-collapse:collapse;width:100%;margin-bottom:1rem}th,td{border:1px solid #d1d5db;padding:8px;text-align:left}th{background-color:#f3f4f6;font-weight:bold}`;
-            const fullHtml = `<html><head><meta charset="UTF-8"><style>${styles}</style></head><body>${sanitizedHtml}</body></html>`;
-            
-            const doc = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' });
-            
-            doc.setDocumentProperties({
-                title: title,
-                author: 'RAG-Optimized PDF Converter',
-                keywords: 'Markdown, PDF, RAG, Gemini API, CSV',
-                creator: 'RAG-Optimized PDF Converter'
-            });
+            const createPdf = async (markdownContent: string, title: string): Promise<any> => {
+                const rawHtml = await marked.parse(markdownContent, { gfm: true, breaks: true });
+                const sanitizedHtml = DOMPurify.sanitize(rawHtml);
+                const styles = `body{font-family:'Helvetica','sans-serif';line-height:1.6;color:#1f2937}h1{font-size:24pt;font-weight:700;margin-bottom:16pt;border-bottom:1px solid #d1d5db;padding-bottom:8pt;color:#111827}h2{font-size:20pt;font-weight:700;margin-bottom:12pt;border-bottom:1px solid #e5e7eb;padding-bottom:6pt;color:#111827}h3{font-size:16pt;font-weight:700;margin-bottom:10pt;color:#1f2937}p,ul,ol,blockquote{margin-bottom:12pt}ul,ol{padding-left:20pt}li{margin-bottom:4pt}code{font-family:'Courier New',Courier,monospace;background-color:#f3f4f6;padding:2pt 4pt;border-radius:4px;font-size:85%;color:#374151}pre{background-color:#f3f4f6;padding:12pt;border-radius:6px;overflow:auto;margin-bottom:16pt}pre code{padding:0;background-color:transparent}blockquote{color:#4b5563;border-left:4px solid #d1d5db;padding-left:16pt;margin-left:0;font-style:italic}a{color:#2563eb;text-decoration:none}hr{border-top:1px solid #d1d5db;margin:2rem 0}table{border-collapse:collapse;width:100%;margin-bottom:1rem}th,td{border:1px solid #d1d5db;padding:8px;text-align:left}th{background-color:#f3f4f6;font-weight:bold}`;
+                const fullHtml = `<html><head><meta charset="UTF-8"><style>${styles}</style></head><body>${sanitizedHtml}</body></html>`;
+                
+                const doc = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' });
+                
+                doc.setDocumentProperties({
+                    title: title,
+                    author: 'Gemini RAG Magician',
+                    keywords: 'Markdown, PDF, RAG, Gemini API, CSV',
+                    creator: 'Gemini RAG Magician'
+                });
+                
+                await doc.html(fullHtml, { margin: [40, 40, 40, 40], autoPaging: 'text', width: 515, windowWidth: 700 });
+                return doc;
+            };
 
-            return doc.html(fullHtml, { margin: [40, 40, 40, 40], autoPaging: 'text', width: 515, windowWidth: 700 });
-        };
-
-        try {
-            if (isJoining) {
-                setStatusMessage("Generating combined PDF...");
-                const doc = await createPdf(combinedMarkdown, 'RAG-Optimized Document');
-                doc.save('rag-combined.pdf');
-            } else {
-                const zip = new window.JSZip();
-                for (let i = 0; i < files.length; i++) {
-                    const file = files[i];
-                    setStatusMessage(`Generating PDF ${i + 1}/${files.length}...`);
-                    const title = file.name.replace(/\.(md|markdown|csv)$/i, '');
-                    const doc = await createPdf(file.content, title);
-                    const pdfBlob = doc.output('blob');
-                    zip.file(`${title}.pdf`, pdfBlob);
+            try {
+                if (isJoining) {
+                    setStatusMessage("Generating combined PDF...");
+                    const doc = await createPdf(combinedMarkdown, 'RAG-Optimized Document');
+                    if (doc) {
+                      doc.save('rag-combined.pdf');
+                    } else {
+                      throw new Error("PDF document generation failed.");
+                    }
+                } else {
+                    const zip = new window.JSZip();
+                    for (let i = 0; i < files.length; i++) {
+                        const file = files[i];
+                        setStatusMessage(`Generating PDF ${i + 1}/${files.length}...`);
+                        const title = file.name.replace(/\.(md|markdown|csv)$/i, '');
+                        const doc = await createPdf(file.content, title);
+                        if (doc) {
+                          const pdfBlob = doc.output('blob');
+                          zip.file(`${title}.pdf`, pdfBlob);
+                        } else {
+                          console.warn(`Skipping PDF for ${file.name} due to generation failure.`);
+                        }
+                    }
+                    setStatusMessage('Creating ZIP file...');
+                    const zipBlob = await zip.generateAsync({ type: 'blob' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(zipBlob);
+                    link.download = 'rag-pdfs.zip';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(link.href);
                 }
-                setStatusMessage('Creating ZIP file...');
-                const zipBlob = await zip.generateAsync({ type: 'blob' });
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(zipBlob);
-                link.download = 'rag-pdfs.zip';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(link.href);
+            } catch (err) {
+                console.error("Failed to generate PDF output:", err);
+                const message = err instanceof Error ? err.message : "An unknown error occurred.";
+                setError(`Failed to generate PDF output: ${message}`);
+            } finally {
+                setIsLoading(false);
+                setStatusMessage('');
             }
-        } catch (err) {
-            console.error("Failed to generate output:", err);
-            const message = err instanceof Error ? err.message : "An unknown error occurred.";
-            setError(`Failed to generate output: ${message}`);
-        } finally {
-            setIsLoading(false);
-            setStatusMessage('');
+        } else { // JSON output
+             try {
+                if (isJoining) {
+                    setStatusMessage("Generating combined JSON...");
+                    const jsonData = JSON.stringify(files.map(({ name, content }) => ({ name, content })), null, 2);
+                    const blob = new Blob([jsonData], { type: 'application/json' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = 'rag-combined.json';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(link.href);
+                } else {
+                    setStatusMessage('Creating ZIP with JSON files...');
+                    const zip = new window.JSZip();
+                    for (const file of files) {
+                        const jsonData = JSON.stringify({ name: file.name, content: file.content }, null, 2);
+                        const title = file.name.replace(/\.(md|markdown|csv)$/i, '');
+                        zip.file(`${title}.json`, jsonData);
+                    }
+                    const zipBlob = await zip.generateAsync({ type: 'blob' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(zipBlob);
+                    link.download = 'rag-json.zip';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(link.href);
+                }
+            } catch (err) {
+                console.error("Failed to generate JSON output:", err);
+                const message = err instanceof Error ? err.message : "An unknown error occurred.";
+                setError(`Failed to generate JSON output: ${message}`);
+            } finally {
+                setIsLoading(false);
+                setStatusMessage('');
+            }
         }
-    }, [files, isJoining, combinedMarkdown]);
+    }, [files, isJoining, combinedMarkdown, outputFormat]);
+    
+    const getDownloadButtonText = () => {
+        if (isLoading) {
+            return (
+                <>
+                    <SpinnerIcon />
+                    {statusMessage || 'Processing...'}
+                </>
+            );
+        }
+        
+        const icon = <DownloadIcon />;
+        if (outputFormat === 'pdf') {
+            return <>{icon}{isJoining ? 'Download PDF' : 'Download as ZIP'}</>;
+        }
+        // else JSON
+        return <>{icon}{isJoining ? 'Download JSON' : 'Download as ZIP'}</>;
+    };
 
     return (
         <div className="flex flex-col h-screen bg-gray-900 text-gray-200">
             <header className="flex items-center justify-between p-4 bg-gray-800 border-b border-gray-700 shadow-md flex-wrap gap-4">
                 <div className="flex items-center space-x-3">
-                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8 text-cyan-400"><path d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0 0 16.5 9h-1.875a.375.375 0 0 1-.375-.375V6.75A3.75 3.75 0 0 0 10.5 3H5.625Z M10.5 10.5a.75.75 0 0 0-1.5 0v1.5a.75.75 0 0 0 1.5 0v-1.5Z" /><path d="M12.47 6.112a.75.75 0 0 0-1.06 1.06l3.611 3.612a.75.75 0 0 0 1.06-1.06l-3.61-3.612Z" /></svg>
-                    <h1 className="text-xl font-bold text-white tracking-wide">MD/CSV to RAG-Optimized PDF</h1>
+                     <WizardHatIcon />
+                     <div className="flex flex-col">
+                        <h1 className="text-xl font-bold text-white tracking-wide">Gemini RAG Magician</h1>
+                        <span className="text-xs text-gray-400 -mt-1">by Vajbratya</span>
+                     </div>
                 </div>
                 <div className="flex items-center space-x-4">
+                    <div className="flex items-center space-x-2 bg-gray-700 p-1 rounded-lg">
+                         <button onClick={() => setOutputFormat('pdf')} className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${outputFormat === 'pdf' ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-600'}`}>
+                            PDF
+                        </button>
+                        <button onClick={() => setOutputFormat('json')} className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${outputFormat === 'json' ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-600'}`}>
+                            JSON
+                        </button>
+                    </div>
+
                     <label className="flex items-center cursor-pointer">
-                        <span className="mr-3 text-sm font-medium">Combine into single PDF</span>
+                        <span className="mr-3 text-sm font-medium">Combine Files</span>
                         <div className="relative">
                             <input type="checkbox" checked={isJoining} onChange={() => setIsJoining(!isJoining)} className="sr-only peer" />
                             <div className="w-11 h-6 bg-gray-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-600"></div>
@@ -312,17 +389,7 @@ const App: React.FC = () => {
                         disabled={isLoading || files.length === 0}
                         className="flex items-center justify-center w-48 px-4 py-2 font-semibold text-white bg-cyan-600 rounded-lg shadow-md hover:bg-cyan-700 disabled:bg-cyan-800 disabled:cursor-not-allowed transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:ring-offset-2 focus:ring-offset-gray-800"
                     >
-                        {isLoading ? (
-                            <>
-                                <SpinnerIcon />
-                                {statusMessage || 'Processing...'}
-                            </>
-                        ) : (
-                            <>
-                                <DownloadIcon />
-                                {isJoining ? 'Download PDF' : 'Download as ZIP'}
-                            </>
-                        )}
+                        {getDownloadButtonText()}
                     </button>
                 </div>
             </header>
@@ -351,7 +418,27 @@ const App: React.FC = () => {
                         </div>
                         <div className="overflow-y-auto p-2">
                            {files.length === 0 ? (
-                                <p className="text-center text-gray-500 p-4">Upload files to see them here.</p>
+                                <div className="p-4 text-gray-400 text-sm">
+                                    <h3 className="font-bold text-base text-gray-200 mb-3">How to Use the Magic</h3>
+                                    <ol className="list-decimal list-inside space-y-3">
+                                        <li>
+                                            <strong>Upload Files:</strong> Drag & drop or click the area above to upload your <code>.md</code>, <code>.csv</code>, or <code>.zip</code> files.
+                                        </li>
+                                        <li>
+                                            <strong>Automatic Conversion:</strong> CSVs are automagically converted to Markdown tables, and compatible files are extracted from ZIP archives.
+                                        </li>
+                                        <li>
+                                            <strong>Configure Output:</strong>
+                                            <ul className="list-disc list-inside ml-4 mt-1 text-gray-500 space-y-1">
+                                                <li>Choose your desired spell: <strong>PDF</strong> or <strong>JSON</strong> format.</li>
+                                                <li>Toggle <strong>Combine Files</strong> to merge all documents into a single, powerful artifact.</li>
+                                            </ul>
+                                        </li>
+                                        <li>
+                                            <strong>Download:</strong> Click the download button to get your RAG-optimized file(s).
+                                        </li>
+                                    </ol>
+                                </div>
                            ) : (
                                <ul>
                                    {files.map((file) => (

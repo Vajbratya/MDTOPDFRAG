@@ -1,5 +1,5 @@
 {
-  "name": "Markdown to RAG-Optimized PDF",
-  "description": "A tool to convert Markdown text into a well-structured, text-selectable PDF, optimized for use with Gemini API's Retrieval-Augmented Generation (RAG).",
+  "name": "Gemini RAG Magician",
+  "description": "A tool to convert Markdown, CSV, and ZIP files into a well-structured, text-selectable PDF or JSON, optimized for use with Gemini API's Retrieval-Augmented Generation (RAG).",
   "requestFramePermissions": []
 }
