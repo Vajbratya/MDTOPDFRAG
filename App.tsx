@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { DownloadIcon, SpinnerIcon, UploadIcon, TrashIcon, WizardHatIcon } from './components/icons';
+import { DownloadIcon, SpinnerIcon, UploadIcon, TrashIcon, WizardHatIcon, SparklesIcon } from './components/icons';
 
 // Declare global variables from CDN scripts for TypeScript
 declare global {
@@ -14,6 +14,7 @@ declare global {
             jsPDF: any;
         };
         JSZip: any;
+        GoogleGenAI: any;
     }
 }
 
@@ -79,6 +80,9 @@ const App: React.FC = () => {
     const [statusMessage, setStatusMessage] = useState<string>('');
     const [isDragging, setIsDragging] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
+    const [summary, setSummary] = useState<string | null>(null);
+    const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
+    const [summaryError, setSummaryError] = useState<string | null>(null);
 
     const sanitizeFilenameForHeader = (name: string) => {
         const extensionless = name.replace(/\.(md|markdown|csv)$/i, '');
@@ -102,8 +106,14 @@ const App: React.FC = () => {
         updatePreview();
     }, [combinedMarkdown]);
 
+    const clearSummary = () => {
+        setSummary(null);
+        setSummaryError(null);
+    }
+
     const processFiles = useCallback(async (droppedFiles: File[]) => {
         setError(null);
+        clearSummary();
         if (files.length >= MAX_FILES) {
             setError(`You have reached the maximum of ${MAX_FILES} files.`);
             return;
@@ -217,6 +227,38 @@ const App: React.FC = () => {
     
     const removeFile = (fileId: string) => {
         setFiles(files => files.filter(file => file.id !== fileId));
+        clearSummary();
+    };
+
+    const handleSummarize = async () => {
+        clearSummary();
+        setIsSummarizing(true);
+        
+        try {
+            const { GoogleGenAI } = window;
+            if (!GoogleGenAI) {
+                throw new Error("Gemini AI library not loaded. Please refresh the page.");
+            }
+            if (!combinedMarkdown) {
+                throw new Error("There is no content to summarize.");
+            }
+
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: `Provide a concise summary of the following document:\n\n---\n\n${combinedMarkdown}`
+            });
+
+            const rawHtml = await window.marked.parse(response.text, { gfm: true, breaks: true });
+            setSummary(window.DOMPurify.sanitize(rawHtml));
+
+        } catch (err) {
+            console.error("Summarization error:", err);
+            const message = err instanceof Error ? err.message : "An unknown error occurred during summarization.";
+            setSummaryError(message);
+        } finally {
+            setIsSummarizing(false);
+        }
     };
 
     const handleDownload = useCallback(async () => {
@@ -414,7 +456,7 @@ const App: React.FC = () => {
                     <div className="flex flex-col flex-grow h-0 bg-gray-800 border border-gray-700 rounded-lg">
                         <div className="flex justify-between items-center p-3 border-b border-gray-700">
                             <h2 className="font-semibold">Files ({files.length}/{MAX_FILES})</h2>
-                            <button onClick={() => setFiles([])} disabled={files.length === 0} className="text-sm text-cyan-400 hover:underline disabled:text-gray-500 disabled:cursor-not-allowed">Clear All</button>
+                            <button onClick={() => { setFiles([]); clearSummary(); }} disabled={files.length === 0} className="text-sm text-cyan-400 hover:underline disabled:text-gray-500 disabled:cursor-not-allowed">Clear All</button>
                         </div>
                         <div className="overflow-y-auto p-2">
                            {files.length === 0 ? (
@@ -453,9 +495,21 @@ const App: React.FC = () => {
                     </div>
                 </div>
                 <div className="flex flex-col h-full overflow-hidden">
-                    <label className="text-sm font-medium text-gray-400 mb-2">
-                        {isJoining ? 'Combined Preview' : 'Preview Disabled'}
-                    </label>
+                    <div className="flex justify-between items-center mb-2">
+                        <label className="text-sm font-medium text-gray-400">
+                            {isJoining ? 'Combined Preview' : 'Preview Disabled'}
+                        </label>
+                         {isJoining && files.length > 0 && (
+                            <button 
+                                onClick={handleSummarize} 
+                                disabled={isSummarizing || isLoading}
+                                className="flex items-center px-3 py-1.5 text-xs font-semibold text-cyan-200 bg-cyan-800/50 rounded-md hover:bg-cyan-700/50 disabled:bg-gray-700 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
+                            >
+                                {isSummarizing ? <SpinnerIcon /> : <SparklesIcon />}
+                                {isSummarizing ? 'Summarizing...' : 'Summarize with AI'}
+                            </button>
+                        )}
+                    </div>
                     <div
                         className="w-full h-full p-6 bg-gray-800 border border-gray-700 rounded-lg overflow-y-auto 
                                    prose prose-invert prose-sm max-w-none 
@@ -474,6 +528,17 @@ const App: React.FC = () => {
                                    prose-th:border prose-th:border-gray-600 prose-th:px-4 prose-th:py-2 prose-th:bg-gray-700 prose-th:font-bold
                                    prose-td:border prose-td:border-gray-600 prose-td:px-4 prose-td:py-2"
                     >
+                     {summaryError && (
+                        <div className="mb-4 p-3 text-sm text-red-300 bg-red-900/50 border border-red-500/50 rounded-lg" role="alert">
+                           <span className="font-medium">Summarization Error:</span> {summaryError}
+                        </div>
+                     )}
+                     {summary && (
+                        <div className="mb-6 p-4 border border-cyan-500/30 rounded-lg bg-cyan-900/20">
+                            <h3 className="font-bold text-lg mb-2 text-cyan-300 flex items-center"><SparklesIcon /> AI Summary</h3>
+                            <div className="prose prose-invert prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: summary }} />
+                        </div>
+                     )}
                      {isJoining && files.length > 0 ? (
                         <div dangerouslySetInnerHTML={{ __html: sanitizedHtmlPreview }} />
                     ) : (
